@@ -10,14 +10,18 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+if (geminiApiKey) {
+  console.log('[INIT] GEMINI_API_KEY loaded:', geminiApiKey.substring(0, 10) + '...(hidden)');
+} else {
+  console.warn('[INIT] GEMINI_API_KEY is NOT configured!');
+}
 const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
 const PREFERRED_MODEL_ORDER = [
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
   'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
   'gemini-1.5-pro',
-  'gemini-pro'
+  'gemini-1.5-flash-8b'
 ];
 let cachedModelNames = null;
 let modelCacheAt = 0;
@@ -29,8 +33,22 @@ async function getAvailableModelNames() {
     return cachedModelNames;
   }
 
+  if (!geminiApiKey || geminiApiKey.trim() === '') {
+    throw new Error('GEMINI_API_KEY is not configured. Please set it in your .env file.');
+  }
+
+  console.log('[AI] Fetching available models from Google API...');
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`);
+  
+  console.log('[AI] Google API Response Status:', response.status, response.statusText);
+  
   if (!response.ok) {
+    const errorBody = await response.text();
+    console.error('[AI] Google API Error Response:', errorBody);
+    
+    if (response.status === 403) {
+      throw new Error('GEMINI_API_KEY is invalid or does not have required permissions. Please verify your API key in the Google Cloud Console and ensure the Generative Language API is enabled.');
+    }
     throw new Error(`Model discovery failed: ${response.status} ${response.statusText}`);
   }
 
@@ -56,20 +74,45 @@ async function getAvailableModelNames() {
 
 async function generateAIText(prompt) {
   let lastError = null;
-  const modelCandidates = await getAvailableModelNames();
+  const AI_TIMEOUT_MS = 30000; // 30 second timeout per model attempt
+  
+  // Try to get available models, but fall back to default if discovery fails
+  let modelCandidates = PREFERRED_MODEL_ORDER;
+  
+  try {
+    modelCandidates = await getAvailableModelNames();
+  } catch (error) {
+    console.warn('[AI] Model discovery failed, using preferred order as fallback:', error.message);
+    // Continue with preferred models anyway
+  }
 
   for (const modelName of modelCandidates) {
     try {
+      console.log(`[AI] Attempting model: ${modelName}`);
+      
       const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
+      
+      // Create timeout promise
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`AI request timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
+      );
+      
+      // Race between AI call and timeout
+      const result = await Promise.race([
+        model.generateContent(prompt),
+        timeoutPromise
+      ]);
+      
+      // Get text from response
       const text = result?.response?.text?.();
-      if (text) {
-        console.log(`[AI] Model success: ${modelName}`);
+      
+      if (text && text.trim()) {
+        console.log(`[AI] ✓ Model success: ${modelName}`);
         return text;
       }
     } catch (error) {
       lastError = error;
-      console.error(`[AI] Model failed (${modelName}):`, error.message);
+      console.error(`[AI] ✗ Model failed (${modelName}):`, error.message);
     }
   }
 
@@ -235,24 +278,26 @@ router.get('/dataset/:id', auth, async (req, res) => {
 // AI Dataset Summary
 router.post('/ai/dataset/:id', auth, async (req, res) => {
   try {
-    console.log('[AI][dataset] Incoming body:', req.body);
+    console.log('[AI][dataset] Request for dataset:', req.params.id);
+    
     if (!genAI) {
-      return res.status(500).json({ error: 'GEMINI_API_KEY is missing' });
+      console.error('[AI] genAI not initialized - GEMINI_API_KEY may be missing');
+      return res.status(500).json({ error: 'AI service not configured. Please check GEMINI_API_KEY.' });
     }
 
     const dataset = await Dataset.findOne({ _id: req.params.id, user: req.user.id });
-    if (!dataset) return res.status(404).json({ error: 'Not found' });
+    if (!dataset) return res.status(404).json({ error: 'Dataset not found' });
 
-    if (dataset.aiSummary) return res.json({ summary: dataset.aiSummary });
+    // Return cached summary if available
+    if (dataset.aiSummary) {
+      console.log('[AI][dataset] Returning cached summary');
+      return res.json({ summary: dataset.aiSummary });
+    }
 
     const datasetForAI = req.body?.dataset;
-    if (!Array.isArray(datasetForAI)) {
-      return res.status(400).json({ error: 'No dataset provided' });
+    if (!Array.isArray(datasetForAI) || datasetForAI.length === 0) {
+      return res.status(400).json({ error: 'Dataset required for analysis' });
     }
-    if (datasetForAI.length === 0) {
-      return res.status(400).json({ error: 'Empty dataset' });
-    }
-    console.log('[AI][dataset] Dataset size for AI:', datasetForAI.length);
 
     const prompt = `Analyze this antibiotic resistance dataset and explain:
 - dominant resistance patterns
@@ -265,79 +310,104 @@ Total Genes: ${dataset.analysis.totalGenes}
 Frequent Resistance: ${dataset.analysis.frequentResistance}
 Frequent Organism: ${dataset.analysis.frequentOrganism}`;
 
+    console.log('[AI][dataset] Generating AI analysis...');
     const summary = await generateAIText(prompt);
-    console.log('[AI][dataset] AI response preview:', summary.slice(0, 200));
-
+    
+    console.log('[AI][dataset] ✓ Analysis generated successfully');
     dataset.aiSummary = summary;
     await dataset.save();
 
     res.json({ summary });
   } catch (err) {
-    console.error("AI ERROR:", err);
-    res.status(500).json({ error: "AI processing failed" });
+    console.error('[AI][dataset] ERROR:', err.message);
+    
+    const errorMessage = err.message.includes('timeout') 
+      ? 'AI request timed out. Please try again.'
+      : err.message.includes('No compatible')
+      ? 'No AI models available. Check API key configuration.'
+      : 'AI analysis failed. Please try again later.';
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
 // AI Organism Explain
 router.post('/ai/organism/:id', auth, async (req, res) => {
   try {
-    console.log('[AI][organism] Incoming body:', req.body);
+    console.log('[AI][organism] Request for organism analysis');
+    
     if (!genAI) {
-      return res.status(500).json({ error: 'GEMINI_API_KEY is missing' });
+      console.error('[AI] genAI not initialized');
+      return res.status(500).json({ error: 'AI service not configured.' });
     }
 
     const { organism, list } = req.body;
     if (!organism || !Array.isArray(list) || list.length === 0) {
-      return res.status(400).json({ error: 'Empty dataset' });
+      return res.status(400).json({ error: 'Organism and resistance list required' });
     }
-    console.log('[AI][organism] Organism and list size:', organism, list.length);
 
     const prompt = `Organism: ${organism}
-Resistance Types: ${list}
+Resistance Types: ${list.join(', ')}
 
 Explain:
-- about the organism
-- diseases caused
-- resistance behavior
-- why it appears in dataset`;
+1. About the organism and its characteristics
+2. Common diseases it causes
+3. Resistance behavior in clinical settings
+4. Why it appears in this dataset`;
 
+    console.log('[AI][organism] Generating explanation for:', organism);
     const explanation = await generateAIText(prompt);
-    console.log('[AI][organism] AI response preview:', explanation.slice(0, 200));
+    
+    console.log('[AI][organism] ✓ Explanation generated successfully');
     res.json({ explanation });
   } catch (err) {
-    console.error("AI ERROR:", err);
-    res.status(500).json({ error: "AI processing failed", detail: err.message });
+    console.error('[AI][organism] ERROR:', err.message);
+    
+    const errorMessage = err.message.includes('timeout')
+      ? 'AI request timed out. Please try again.'
+      : 'Failed to generate organism explanation. Please try again.';
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
 // AI Gene Explain
 router.post('/ai/gene/:id', auth, async (req, res) => {
   try {
-    console.log('[AI][gene] Incoming body:', req.body);
+    console.log('[AI][gene] Request for gene analysis');
+    
     if (!genAI) {
-      return res.status(500).json({ error: 'GEMINI_API_KEY is missing' });
+      console.error('[AI] genAI not initialized');
+      return res.status(500).json({ error: 'AI service not configured.' });
     }
 
     const { gene, organism } = req.body;
     if (!gene || !organism) {
       return res.status(400).json({ error: 'Gene and organism are required' });
     }
-    console.log('[AI][gene] Gene + organism:', gene, organism);
 
     const prompt = `Gene: ${gene}
 Organism: ${organism}
 
 Explain:
-- gene function
-- resistance mechanism
-- biological importance`;
+1. What is the function of this gene
+2. How it confers resistance
+3. Its biological importance
+4. Clinical relevance`;
 
+    console.log('[AI][gene] Generating explanation for gene:', gene);
     const explanation = await generateAIText(prompt);
-    console.log('[AI][gene] AI response preview:', explanation.slice(0, 200));
+    
+    console.log('[AI][gene] ✓ Explanation generated successfully');
     res.json({ explanation });
   } catch (err) {
-    console.error("AI ERROR:", err);
-    res.status(500).json({ error: "AI processing failed", detail: err.message });
+    console.error('[AI][gene] ERROR:', err.message);
+    
+    const errorMessage = err.message.includes('timeout')
+      ? 'AI request timed out. Please try again.'
+      : 'Failed to generate gene explanation. Please try again.';
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
