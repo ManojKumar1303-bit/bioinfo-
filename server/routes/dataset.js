@@ -1,12 +1,13 @@
 const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
+const mongoose = require('mongoose');
 const Dataset = require('../models/Dataset');
 const auth = require('../middleware/authMiddleware');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const router = express.Router();
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ storage: multer.memoryStorage() });
 
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
 const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
@@ -81,24 +82,63 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const workbook = xlsx.readFile(req.file.path);
+    const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
-    const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+    const worksheet = workbook.Sheets[sheetName];
+    const data = xlsx.utils.sheet_to_json(worksheet, {
+      defval: '',
+      raw: false
+    });
+    console.log('Total rows parsed:', data.length);
+
+    const normalizeKey = (key) => String(key || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+
+    const getValue = (row, keys) => {
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) {
+          return row[key];
+        }
+      }
+
+      const normalizedRow = {};
+      Object.keys(row || {}).forEach((k) => {
+        normalizedRow[normalizeKey(k)] = row[k];
+      });
+
+      for (const key of keys) {
+        const normalizedMatch = normalizedRow[normalizeKey(key)];
+        if (normalizedMatch !== undefined) return normalizedMatch;
+      }
+
+      return '';
+    };
 
     // Format data
     const formattedData = data.map(row => {
-      const rawLen = row['Protein Length (aa)'] ?? row['Protein Length (AA)'] ?? row['Protein Length'] ?? row.proteinLength;
+      const rawLen = getValue(row, [
+        'Protein Length (aa)',
+        'Protein Length (AA)',
+        'Protein Length',
+        'proteinLength',
+        'Protein length (aa)'
+      ]);
       const parsedLen = Number(rawLen);
       const validLen = !isNaN(parsedLen) && parsedLen > 0 ? parsedLen : 0;
 
       return {
-        geneName: row['Gene Name'] || row.geneName || '',
-        organism: row['Organism'] || row.organism || '',
-        resistanceType: row['Resistance Type'] || row.resistanceType || '',
+        geneName: String(getValue(row, ['Gene Name', 'geneName'])).trim(),
+        organism: String(getValue(row, ['Organism', 'organism'])).trim(),
+        resistanceType: String(getValue(row, ['Resistance Type', 'resistanceType'])).trim(),
         proteinLength: validLen,
-        function: row['Function'] || row.function || ''
+        function: String(getValue(row, ['Function', 'function'])).trim()
       };
-    });
+    }).filter((row) =>
+      row.geneName || row.organism || row.resistanceType || row.function || row.proteinLength > 0
+    );
+
+    console.log('Total rows formatted:', formattedData.length);
 
     // Compute analysis
     let totalGenes = formattedData.length;
@@ -110,8 +150,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       '400-600': 0,
       '600+': 0
     };
-    const proteinLengths = data
-      .map(row => Number(row["Protein Length (aa)"]))
+    const proteinLengths = formattedData
+      .map(row => Number(row.proteinLength))
       .filter(val => !isNaN(val) && val > 0);
 
     formattedData.forEach(row => {
@@ -160,8 +200,9 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     });
 
     await dataset.save();
+    console.log('Total rows saved:', dataset.data.length);
 
-    res.json(dataset);
+    res.json({ data: dataset, totalRows: dataset.data.length });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error parsing file' });
@@ -179,9 +220,13 @@ router.get('/datasets', auth, async (req, res) => {
 
 router.get('/dataset/:id', auth, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid dataset id' });
+    }
+
     const dataset = await Dataset.findOne({ _id: req.params.id, user: req.user.id });
     if (!dataset) return res.status(404).json({ error: 'Not found' });
-    res.json(dataset);
+    res.json({ data: dataset, totalRows: Array.isArray(dataset.data) ? dataset.data.length : 0 });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }

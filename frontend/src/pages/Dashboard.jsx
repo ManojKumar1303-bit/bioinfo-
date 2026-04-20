@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, PieChart, Pie, Cell, Legend } from 'recharts';
@@ -9,6 +9,7 @@ import { API_BASE_URL, authHeaders } from '../utils/savedResults';
 const AI_TIMEOUT_MS = 35000;
 const AI_MAX_RETRIES = 2;
 const CHART_HEIGHT = 300;
+const isValidDatasetId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || ''));
 
 const getErrorMessage = (error) => {
   if (axios.isAxiosError(error)) {
@@ -98,6 +99,7 @@ const Dashboard = () => {
         setLoading(true);
         const queryParams = new URLSearchParams(location.search);
         let dsId = queryParams.get('dataset');
+        if (!isValidDatasetId(dsId)) dsId = null;
 
         if (!dsId) {
           const res = await axios.get(`${API_BASE_URL}/api/datasets`, { headers: requestHeaders, signal: controller.signal });
@@ -113,7 +115,8 @@ const Dashboard = () => {
         }
 
         const res = await axios.get(`${API_BASE_URL}/api/dataset/${dsId}`, { headers: requestHeaders, signal: controller.signal });
-        setDataset(res.data);
+        const fetchedDataset = res.data?.data || res.data;
+        setDataset(fetchedDataset);
       } catch (err) {
         if (controller.signal.aborted) return;
         console.error(err);
@@ -284,6 +287,21 @@ const Dashboard = () => {
     });
   }, [dataset?._id, runAIRequest]);
 
+  const deferredSearch = useDeferredValue(search);
+  const safeRows = useMemo(() => (
+    Array.isArray(dataset?.data) ? dataset.data : []
+  ), [dataset?.data]);
+  const filteredData = useMemo(() => {
+    const query = String(deferredSearch || '').toLowerCase().trim();
+    if (!query) return safeRows;
+
+    return safeRows.filter((row) =>
+      String(row?.geneName || '').toLowerCase().includes(query) ||
+      String(row?.organism || '').toLowerCase().includes(query)
+    );
+  }, [safeRows, deferredSearch]);
+  const analysis = dataset?.analysis || {};
+
   if (loading) return <div className="p-10 text-slate-500 font-medium text-lg">Loading dashboard...</div>;
 
   if (!dataset) return (
@@ -295,13 +313,6 @@ const Dashboard = () => {
         Go to Upload
       </Link>
     </div>
-  );
-
-  const safeRows = Array.isArray(dataset?.data) ? dataset.data : [];
-  const analysis = dataset?.analysis || {};
-  const filteredData = safeRows.filter((row) =>
-    String(row?.geneName || '').toLowerCase().includes(search.toLowerCase()) ||
-    String(row?.organism || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const resChartData = Object.entries(analysis.resistanceDistribution || {}).map(([name, count]) => ({ name, count }));
@@ -422,17 +433,22 @@ const Dashboard = () => {
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <div className="p-6 border-b flex items-center justify-between bg-slate-50">
           <h3 className="text-xl font-bold text-slate-800">Dataset Records</h3>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input 
-              type="text" 
-              placeholder="Search genes or organisms..." 
-              value={search} onChange={e => setSearch(e.target.value)}
-              className="pl-10 pr-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white text-sm w-64 text-slate-800"
-            />
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold text-slate-500 bg-white border border-slate-200 px-2.5 py-1.5 rounded-lg">
+              {filteredData.length} rows
+            </span>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input
+                type="text"
+                placeholder="Search genes or organisms..."
+                value={search} onChange={e => setSearch(e.target.value)}
+                className="pl-10 pr-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white text-sm w-64 text-slate-800"
+              />
+            </div>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="overflow-auto max-h-[520px]">
           <table className="w-full text-left text-sm text-slate-600">
             <thead className="bg-slate-50 text-slate-500 uppercase text-xs font-semibold py-4 border-b">
               <tr>
@@ -444,7 +460,7 @@ const Dashboard = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredData.slice(0, 50).map((row, idx) => (
+              {filteredData.map((row, idx) => (
                 <tr key={idx} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 font-medium text-indigo-600 cursor-pointer group" onClick={() => handleGeneAI(row.geneName, row.organism)}>
                     {row.geneName} <Info size={14} className="inline ml-1 text-slate-300 group-hover:text-indigo-500" />

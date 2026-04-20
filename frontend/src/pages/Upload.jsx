@@ -25,7 +25,8 @@ const Upload = () => {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
       });
-      navigate(`/?dataset=${res.data._id}`);
+      const uploadedDataset = res.data?.data || res.data;
+      navigate(`/?dataset=${uploadedDataset._id}`);
     } catch (err) {
       alert('Upload failed. ' + err.message);
     } finally {
