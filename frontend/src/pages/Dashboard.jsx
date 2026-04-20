@@ -4,8 +4,8 @@ import axios from 'axios';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Search, Info, Bot, Activity, Dna, Database, BookOpen } from 'lucide-react';
 import AIModal from '../components/AIModal';
+import { API_BASE_URL, authHeaders } from '../utils/savedResults';
 
-const API_BASE_URL = 'http://localhost:5000';
 const AI_TIMEOUT_MS = 35000;
 const AI_MAX_RETRIES = 2;
 const CHART_HEIGHT = 300;
@@ -57,6 +57,9 @@ const Dashboard = () => {
   const [aiStatus, setAiStatus] = useState('Idle');
   const [aiError, setAiError] = useState('');
   const [aiRetryCount, setAiRetryCount] = useState(0);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveMeta, setSaveMeta] = useState(null);
+  const [toast, setToast] = useState({ open: false, message: '' });
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -65,15 +68,20 @@ const Dashboard = () => {
   const aiRequestIdRef = useRef(0);
   const lastAiRequestRef = useRef(null);
 
-  const authHeaders = useMemo(
-    () => ({ Authorization: `Bearer ${localStorage.getItem('token')}` }),
-    []
-  );
+  const requestHeaders = useMemo(() => authHeaders(), []);
+
+  const showToast = useCallback((message) => {
+    setToast({ open: true, message });
+    setTimeout(() => {
+      setToast({ open: false, message: '' });
+    }, 2200);
+  }, []);
 
   const closeAiModal = useCallback(() => {
     setAiModalOpen(false);
     setAiLoading(false);
     setAiStatus('Cancelled');
+    setSaveMeta(null);
     if (aiAbortRef.current) {
       aiAbortRef.current.abort();
       aiAbortRef.current = null;
@@ -92,7 +100,7 @@ const Dashboard = () => {
         let dsId = queryParams.get('dataset');
 
         if (!dsId) {
-          const res = await axios.get(`${API_BASE_URL}/api/datasets`, { headers: authHeaders, signal: controller.signal });
+          const res = await axios.get(`${API_BASE_URL}/api/datasets`, { headers: requestHeaders, signal: controller.signal });
           if (res.data.length > 0) {
             dsId = res.data[res.data.length - 1]._id; // latest
             navigate(`/?dataset=${dsId}`, { replace: true });
@@ -104,7 +112,7 @@ const Dashboard = () => {
           }
         }
 
-        const res = await axios.get(`${API_BASE_URL}/api/dataset/${dsId}`, { headers: authHeaders, signal: controller.signal });
+        const res = await axios.get(`${API_BASE_URL}/api/dataset/${dsId}`, { headers: requestHeaders, signal: controller.signal });
         setDataset(res.data);
       } catch (err) {
         if (controller.signal.aborted) return;
@@ -121,19 +129,19 @@ const Dashboard = () => {
         datasetAbortRef.current.abort();
       }
     };
-  }, [location.search, navigate, authHeaders]);
+  }, [location.search, navigate, requestHeaders]);
 
   useEffect(() => () => {
     if (aiAbortRef.current) aiAbortRef.current.abort();
     if (datasetAbortRef.current) datasetAbortRef.current.abort();
   }, []);
 
-  const runAIRequest = useCallback(async ({ title, endpoint, payload, responseKey }) => {
+  const runAIRequest = useCallback(async ({ title, endpoint, payload, responseKey, savePayload }) => {
     if (!dataset?._id) return;
 
     const requestId = aiRequestIdRef.current + 1;
     aiRequestIdRef.current = requestId;
-    lastAiRequestRef.current = { title, endpoint, payload, responseKey };
+    lastAiRequestRef.current = { title, endpoint, payload, responseKey, savePayload };
 
     if (aiAbortRef.current) aiAbortRef.current.abort();
 
@@ -143,6 +151,7 @@ const Dashboard = () => {
     setAiExplanation('');
     setAiError('');
     setAiRetryCount(0);
+    setSaveMeta(null);
     setAiStatus('Preparing request...');
 
     let lastError = null;
@@ -159,7 +168,7 @@ const Dashboard = () => {
         const res = await axios.post(
           `${API_BASE_URL}${endpoint}`,
           payload,
-          { headers: authHeaders, signal: controller.signal }
+          { headers: requestHeaders, signal: controller.signal }
         );
         clearTimeout(timeoutId);
 
@@ -169,6 +178,11 @@ const Dashboard = () => {
         if (!text) throw new Error('AI response was empty');
 
         setAiExplanation(text);
+        setSaveMeta({
+          ...savePayload,
+          content: text,
+          datasetId: dataset?._id
+        });
         setAiStatus('Response generated.');
         setAiLoading(false);
         aiAbortRef.current = null;
@@ -197,7 +211,30 @@ const Dashboard = () => {
     setAiLoading(false);
     setAiExplanation('');
     aiAbortRef.current = null;
-  }, [dataset?._id, authHeaders]);
+  }, [dataset?._id, requestHeaders]);
+
+  const handleSaveResult = useCallback(async () => {
+    if (!saveMeta?.type || !saveMeta?.name || !saveMeta?.content) return;
+
+    try {
+      setSaveLoading(true);
+      const payload = {
+        type: saveMeta.type,
+        name: saveMeta.name,
+        content: saveMeta.content,
+        datasetId: saveMeta.datasetId
+      };
+      const res = await axios.post(`${API_BASE_URL}/api/save`, payload, {
+        headers: requestHeaders
+      });
+
+      showToast(res.data?.message || 'Result saved successfully');
+    } catch (error) {
+      showToast(getErrorMessage(error));
+    } finally {
+      setSaveLoading(false);
+    }
+  }, [saveMeta, requestHeaders, showToast]);
 
   const handleRetryAI = useCallback(() => {
     if (lastAiRequestRef.current) {
@@ -210,9 +247,13 @@ const Dashboard = () => {
       title: 'Dataset Summary Insight',
       endpoint: `/api/ai/dataset/${dataset?._id}`,
       payload: { dataset: Array.isArray(dataset?.data) ? dataset.data : [] },
-      responseKey: 'summary'
+      responseKey: 'summary',
+      savePayload: {
+        type: 'dataset',
+        name: `${dataset?.filename || 'Dataset'} Summary`
+      }
     });
-  }, [dataset?._id, dataset?.data, runAIRequest]);
+  }, [dataset?._id, dataset?.data, dataset?.filename, runAIRequest]);
 
   const handleOrganismAI = useCallback((organism) => {
     runAIRequest({
@@ -222,7 +263,11 @@ const Dashboard = () => {
         organism,
         list: Array.isArray(dataset?.data) ? dataset.data.map((row) => row.resistanceType).filter(Boolean) : []
       },
-      responseKey: 'explanation'
+      responseKey: 'explanation',
+      savePayload: {
+        type: 'organism',
+        name: organism
+      }
     });
   }, [dataset?._id, dataset?.data, runAIRequest]);
 
@@ -231,7 +276,11 @@ const Dashboard = () => {
       title: `AI Insight: ${gene}`,
       endpoint: `/api/ai/gene/${dataset?._id}`,
       payload: { gene, organism },
-      responseKey: 'explanation'
+      responseKey: 'explanation',
+      savePayload: {
+        type: 'gene',
+        name: gene
+      }
     });
   }, [dataset?._id, runAIRequest]);
 
@@ -417,6 +466,9 @@ const Dashboard = () => {
         isOpen={aiModalOpen} 
         onClose={closeAiModal}
         onRetry={handleRetryAI}
+        onSave={handleSaveResult}
+        canSave={Boolean(saveMeta?.content)}
+        saveLoading={saveLoading}
         title={aiTitle} 
         loading={aiLoading} 
         status={aiStatus}
@@ -424,6 +476,11 @@ const Dashboard = () => {
         error={aiError}
         explanation={aiExplanation} 
       />
+      {toast.open && (
+        <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-4 py-3 rounded-xl shadow-lg z-[70] text-sm">
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 };

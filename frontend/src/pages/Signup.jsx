@@ -13,7 +13,7 @@ const Signup = () => {
       localStorage.setItem('token', res.data.token);
       localStorage.setItem('user', JSON.stringify(res.data.user));
       window.location.href = '/';
-    } catch (err) {
+    } catch {
       alert('Signup failed. User may exist.');
     }
   };

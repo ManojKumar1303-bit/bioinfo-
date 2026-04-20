@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Bot, Loader2, AlertCircle, RefreshCcw } from 'lucide-react';
+import { X, Bot, Loader2, AlertCircle, RefreshCcw, Save } from 'lucide-react';
 
 const renderRichText = (text) => {
   const lines = String(text || '').split('\n');
@@ -14,7 +14,20 @@ const renderRichText = (text) => {
   });
 };
 
-const AIModal = ({ isOpen, onClose, onRetry, title, loading, status, retryCount, error, explanation }) => {
+const AIModal = ({
+  isOpen,
+  onClose,
+  onRetry,
+  onSave,
+  canSave,
+  saveLoading,
+  title,
+  loading,
+  status,
+  retryCount,
+  error,
+  explanation
+}) => {
   if (!isOpen) return null;
 
   return (
@@ -67,7 +80,17 @@ const AIModal = ({ isOpen, onClose, onRetry, title, loading, status, retryCount,
           )}
         </div>
         
-        <div className="mt-6 flex justify-end">
+        <div className="mt-6 flex justify-end gap-3">
+          {canSave && !loading && !error && (
+            <button
+              onClick={onSave}
+              disabled={saveLoading}
+              className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 transition disabled:opacity-60 inline-flex items-center gap-2"
+            >
+              <Save size={16} />
+              {saveLoading ? 'Saving...' : 'Save Result'}
+            </button>
+          )}
           <button onClick={onClose} className="px-6 py-2.5 bg-slate-100 text-slate-700 font-medium rounded-xl hover:bg-slate-200 transition">
             Close
           </button>

@@ -12,9 +12,11 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Routes
 const authRoutes = require('./routes/auth');
 const datasetRoutes = require('./routes/dataset');
+const saveRoutes = require('./routes/save');
 
 app.use('/auth', authRoutes);
 app.use('/api', datasetRoutes);
+app.use('/api/save', saveRoutes);
 
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bioinfo';

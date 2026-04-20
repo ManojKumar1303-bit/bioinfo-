@@ -1,10 +1,8 @@
 import React from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, UploadCloud, History, LogOut, Microscope } from 'lucide-react';
+import { NavLink } from 'react-router-dom';
+import { LayoutDashboard, UploadCloud, History, LogOut, Microscope, Bookmark, FileText } from 'lucide-react';
 
 const Sidebar = () => {
-  const navigate = useNavigate();
-
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
@@ -30,6 +28,14 @@ const Sidebar = () => {
         <NavLink to="/history" className={({ isActive }) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActive ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600 hover:bg-slate-50'}`}>
           <History size={20} />
           History
+        </NavLink>
+        <NavLink to="/saved-summary" className={({ isActive }) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActive ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600 hover:bg-slate-50'}`}>
+          <FileText size={20} />
+          Saved Summary
+        </NavLink>
+        <NavLink to="/saved-details" className={({ isActive }) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActive ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600 hover:bg-slate-50'}`}>
+          <Bookmark size={20} />
+          Saved Details
         </NavLink>
       </nav>
 

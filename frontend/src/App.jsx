@@ -6,6 +6,8 @@ import Dashboard from './pages/Dashboard';
 import Upload from './pages/Upload';
 import History from './pages/History';
 import Sidebar from './components/Sidebar';
+import SavedSummary from './pages/SavedSummary';
+import SavedDetails from './pages/SavedDetails';
 
 const App = () => {
   const token = localStorage.getItem('token');
@@ -21,6 +23,8 @@ const App = () => {
             <Route path="/" element={token ? <Dashboard /> : <Navigate to="/login" />} />
             <Route path="/upload" element={token ? <Upload /> : <Navigate to="/login" />} />
             <Route path="/history" element={token ? <History /> : <Navigate to="/login" />} />
+            <Route path="/saved-summary" element={token ? <SavedSummary /> : <Navigate to="/login" />} />
+            <Route path="/saved-details" element={token ? <SavedDetails /> : <Navigate to="/login" />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </div>
